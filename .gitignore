@@ -1,0 +1,19 @@
+# Environment
+.env
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Model weights (re-downloadable)
+*.pt
+
+# Media / recordings
+metrics_recording*.mp4
+
+# IDE
+.vscode/

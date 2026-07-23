@@ -1,0 +1,5 @@
+# MetricsAI MVP dependencies
+opencv-python
+ultralytics
+requests
+python-dotenv
