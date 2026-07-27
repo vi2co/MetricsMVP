@@ -348,7 +348,7 @@ def run_video(
         active_record_path = next_recording_path(record_path)
         recording_enabled = True
 
-    cv2.namedWindow("MetricsAI")
+    cv2.namedWindow("MetricsAI", cv2.WINDOW_NORMAL)
     cv2.setMouseCallback("MetricsAI", handle_mouse)
 
     while True:
