@@ -4,6 +4,8 @@ from typing import Any
 import requests
 from dotenv import load_dotenv
 
+from pg_cache import PgCache
+
 load_dotenv()
 
 
@@ -68,6 +70,8 @@ class CarAPI:
         self.api_secret = os.getenv("CARAPI_SECRET", "").strip()
         self.jwt: str | None = None
         self.cache: dict[tuple[str, str, str, str], dict[str, Any] | None] = {}
+        self.pg = PgCache()
+        self.pg.init_db()
 
         if not self.api_token:
             raise RuntimeError("Missing CARAPI_TOKEN in .env")
@@ -131,6 +135,11 @@ class CarAPI:
         if cache_key in self.cache:
             return self.cache[cache_key]
 
+        cached = self.pg.get_dimensions(year, make, model, trim)
+        if cached is not None:
+            self.cache[cache_key] = cached
+            return cached
+
         # Use a representative year within the supported data range
         # and normalize the model name to CarAPI conventions.
         lookup_year = clamp_year(year)
@@ -186,6 +195,7 @@ class CarAPI:
         }
 
         self.cache[cache_key] = dimensions
+        self.pg.set_dimensions(year, make, model, trim, dimensions)
         return dimensions
 
     def _request_body_records(
