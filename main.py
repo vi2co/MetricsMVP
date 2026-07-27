@@ -15,6 +15,7 @@ from geometry import (
     format_distance,
     is_fully_visible,
 )
+from rekor_vehicle_identifier import RekorVehicleIdentifier
 from vehicle_classifier import VehicleClassifier
 from vehicle_detector import VehicleDetector
 
@@ -542,6 +543,12 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--rekor-identifier",
+        action="store_true",
+        help="Use Rekor CarCheck API for vehicle identification.",
+    )
+
+    parser.add_argument(
         "--record",
         action="store_true",
         help="Record the processed MetricsAI output video.",
@@ -606,6 +613,9 @@ def main():
     if args.fake_identifier:
         print("Using fake vehicle identifier for demo measurements.")
         classifier = FakeVehicleIdentifier()
+    elif args.rekor_identifier:
+        print("Using Rekor vehicle identifier.")
+        classifier = RekorVehicleIdentifier()
     else:
         classifier = VehicleClassifier()
 
