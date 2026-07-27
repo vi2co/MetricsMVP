@@ -13,7 +13,11 @@ __pycache__/
 *.pt
 
 # Media / recordings
-metrics_recording*.mp4
+*.mp4
+*.webm
 
 # IDE
 .vscode/
+
+# Run Log
+run.log
