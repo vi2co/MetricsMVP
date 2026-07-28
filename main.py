@@ -16,6 +16,7 @@ from geometry import (
     is_fully_visible,
 )
 from rekor_vehicle_identifier import RekorVehicleIdentifier
+from traffic_signal import STATE_COLORS, TrafficSignalDetector
 from vehicle_classifier import VehicleClassifier
 from vehicle_detector import VehicleDetector
 
@@ -307,6 +308,7 @@ def run_video(
     rotate: bool = ROTATE_VIDEO,
     record_path: str = DEFAULT_RECORD_PATH,
     recording_enabled: bool = False,
+    traffic_signal: TrafficSignalDetector | None = None,
 ):
     video = cv2.VideoCapture(source)
 
@@ -461,6 +463,52 @@ def run_video(
 
             draw_label(frame, box, lines)
 
+        if traffic_signal is not None:
+            signals = traffic_signal.detect(frame)
+            signal_counts = {"red": 0, "yellow": 0, "green": 0, "unknown": 0}
+            for sig in signals:
+                bx1, by1, bx2, by2 = sig["box"]
+                state = sig["state"]
+                color = STATE_COLORS[state]
+                signal_counts[state] += 1
+                cv2.rectangle(
+                    frame,
+                    (bx1, by1),
+                    (bx2, by2),
+                    color,
+                    2,
+                )
+                cv2.putText(
+                    frame,
+                    state.upper(),
+                    (bx1, by1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    color,
+                    2,
+                    cv2.LINE_AA,
+                )
+                cx = bx1 + (bx2 - bx1) // 2
+                cy = by1 - 18
+                cv2.circle(frame, (cx, cy), 6, color, -1)
+
+            summary_parts = []
+            for state_name in ("red", "yellow", "green"):
+                count = signal_counts[state_name]
+                if count > 0:
+                    summary_parts.append(f"{state_name.upper()}: {count}")
+            if summary_parts:
+                cv2.putText(
+                    frame,
+                    "Traffic: " + " | ".join(summary_parts),
+                    (20, 70),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.85,
+                    (255, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+
         cv2.putText(
             frame,
             f"Vehicles: {len(result.boxes)}",
@@ -560,6 +608,12 @@ def parse_args() -> argparse.Namespace:
         help=f"Output path for --record. Defaults to {DEFAULT_RECORD_PATH}.",
     )
 
+    parser.add_argument(
+        "--traffic-signals",
+        action="store_true",
+        help="Enable traffic signal detection and state overlay.",
+    )
+
     rotation = parser.add_mutually_exclusive_group()
 
     rotation.add_argument(
@@ -622,6 +676,12 @@ def main():
     feed_type = "live feed" if is_live else "video file"
     print(f"Starting MetricsAI on {feed_type}: {source}")
 
+    traffic_signal = None
+    if args.traffic_signals:
+        print("Loading traffic signal detector...")
+        traffic_signal = TrafficSignalDetector()
+        print("Traffic signal detector ready.")
+
     if args.record:
         print(f"Recording enabled: {args.record_path}")
 
@@ -635,6 +695,7 @@ def main():
         rotate=rotate,
         record_path=args.record_path,
         recording_enabled=args.record,
+        traffic_signal=traffic_signal,
     )
 
 
