@@ -1,6 +1,7 @@
 import argparse
 import re
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -31,6 +32,7 @@ DEFAULT_RECORD_FPS = 30.0
 RECORD_BUTTON_WIDTH = 160
 RECORD_BUTTON_HEIGHT = 42
 RECORD_BUTTON_MARGIN = 18
+CLASSIFY_WORKERS = 2
 
 STREAM_PREFIXES = ("rtsp://", "rtmp://", "http://", "https://", "udp://")
 
@@ -318,6 +320,8 @@ def run_video(
         video.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     prediction_cache = {}
+    pending_classifications: dict[int, Future] = {}
+    last_classified_frame: dict[int, int] = {}
     frame_number = 0
     failed_reads = 0
     writer = None
@@ -351,7 +355,11 @@ def run_video(
     cv2.namedWindow("MetricsAI", cv2.WINDOW_NORMAL)
     cv2.setMouseCallback("MetricsAI", handle_mouse)
 
+    executor = ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS)
+    frame_times: list[float] = []
+
     while True:
+        frame_start = time.perf_counter()
         success, frame = video.read()
 
         if not success:
@@ -372,6 +380,16 @@ def run_video(
             continue
 
         failed_reads = 0
+
+        for tid in list(pending_classifications):
+            future = pending_classifications[tid]
+            if future.done():
+                try:
+                    prediction_cache[tid] = future.result()
+                except Exception as error:
+                    print(f"Classification error for track {tid}: {error}")
+                    prediction_cache[tid] = ("Unknown", 0.0, None, None)
+                del pending_classifications[tid]
 
         if rotate:
             frame = cv2.rotate(
@@ -408,29 +426,26 @@ def run_video(
             should_classify = (
                 track_id is not None
                 and box_width >= MIN_CROP_WIDTH
+                and track_id not in pending_classifications
                 and (
                     track_id not in prediction_cache
-                    or frame_number % CLASSIFY_EVERY == 0
+                    or frame_number
+                    - last_classified_frame.get(track_id, -1)
+                    >= CLASSIFY_EVERY
                 )
             )
 
             if should_classify:
-                identity, identity_conf, trim, dimensions = (
-                    classify_and_get_metrics(
-                        frame=frame,
-                        box=box,
-                        classifier=classifier,
-                        car_api=car_api,
-                        track_id=track_id,
-                    )
+                future = executor.submit(
+                    classify_and_get_metrics,
+                    frame=frame,
+                    box=box,
+                    classifier=classifier,
+                    car_api=car_api,
+                    track_id=track_id,
                 )
-
-                prediction_cache[track_id] = (
-                    identity,
-                    identity_conf,
-                    trim,
-                    dimensions,
-                )
+                pending_classifications[track_id] = future
+                last_classified_frame[track_id] = frame_number
 
             # Identified vehicles display make/model/year, trim,
             # and physical dimensions. Others show box only.
@@ -486,11 +501,32 @@ def run_video(
         if writer is not None:
             writer.write(frame)
 
+        frame_time = time.perf_counter() - frame_start
+        frame_times.append(frame_time)
+
+        if len(frame_times) > 30:
+            frame_times.pop(0)
+
+        avg_frame_time = sum(frame_times) / len(frame_times)
+        fps = 1.0 / avg_frame_time if avg_frame_time > 0 else 0
+
+        cv2.putText(
+            frame,
+            f"FPS: {fps:.0f}",
+            (20, 72),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (200, 200, 200),
+            2,
+        )
+
         cv2.imshow("MetricsAI", frame)
         frame_number += 1
 
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
+
+    executor.shutdown(wait=False)
 
     video.release()
 
