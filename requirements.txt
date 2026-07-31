@@ -3,3 +3,4 @@ opencv-python
 ultralytics
 requests
 python-dotenv
+psycopg2-binary
