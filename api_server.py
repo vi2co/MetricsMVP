@@ -318,7 +318,7 @@ def process_video_source(
     try:
         with _process_lock:
             while frame is not None:
-                annotate_frame(
+                frame = annotate_frame(
                     frame=frame,
                     frame_number=frame_number,
                     detector=pipeline.detector,

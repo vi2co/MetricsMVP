@@ -97,3 +97,8 @@ def is_fully_visible(
 def format_distance(distance_m: float) -> str:
     feet = distance_m * 3.28084
     return f"Distance: {feet:.1f} ft ({distance_m:.1f} m)"
+
+
+def format_distance_feet(distance_m: float) -> str:
+    feet = distance_m * 3.28084
+    return f"{feet:.1f} ft"

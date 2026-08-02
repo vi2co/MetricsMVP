@@ -4,6 +4,10 @@ MetricsMVP is a proof-of-concept for **MetricsAI**, a Physical Object Intelligen
 
 The MVP demonstrates that known real-world physical measurements can be attached to detected objects in real time. The current demo focuses on vehicles, but the long-term platform vision is a reusable physical-property layer for robotics, autonomy, fleet intelligence, and computer vision systems.
 
+## Demo
+
+<video src="https://github.com/user-attachments/assets/6d8386a9-c566-46a8-984e-1d70f80192ee" controls></video>
+
 ## Product Goal
 
 Traditional computer vision answers:
@@ -392,6 +396,9 @@ Notes:
   timestamps, so playback speed always matches the source. If ffmpeg is
   not installed, the server falls back to OpenCV's mp4v writer (known to
   play too fast in some players at fractional frame rates).
+- When a vehicle comes within `TARGET_LOCK_DISTANCE_M` (15 m, constant in
+  `main.py`), its bounding box turns from green to red and a flashing
+  centered "Target locked!" warning is drawn.
 - `max_seconds` caps content time: 30 s of 4K video at ~30 fps is ~900
   frames and takes minutes of wall time on CPU — pair it with
   `max_wall_seconds` for a real-time bound, or use `max_frames` for

@@ -14,6 +14,7 @@ from geometry import (
     DEFAULT_CAMERA,
     GeometryEngine,
     format_distance,
+    format_distance_feet,
     is_fully_visible,
 )
 from rekor_vehicle_identifier import RekorVehicleIdentifier
@@ -33,6 +34,9 @@ RECORD_BUTTON_WIDTH = 160
 RECORD_BUTTON_HEIGHT = 42
 RECORD_BUTTON_MARGIN = 18
 CLASSIFY_WORKERS = 2
+
+TARGET_LOCK_DISTANCE_M = 15.0
+TARGET_LOCK_FLASH_FRAMES = 15
 
 STREAM_PREFIXES = ("rtsp://", "rtmp://", "http://", "https://", "udp://")
 
@@ -231,14 +235,14 @@ def metric_lines(dimensions: dict | None) -> list[str]:
     return lines or ["Metrics unavailable"]
 
 
-def draw_label(frame, box, lines):
+def draw_label(frame, box, lines, box_color=(0, 255, 0)):
     x1, y1, x2, y2 = box
 
     cv2.rectangle(
         frame,
         (x1, y1),
         (x2, y2),
-        (0, 255, 0),
+        box_color,
         2,
     )
 
@@ -254,6 +258,89 @@ def draw_label(frame, box, lines):
             0.75,
             (255, 255, 255),
             2,
+            cv2.LINE_AA,
+        )
+
+
+def draw_target_locked(frame, frame_number, distance_text=None):
+    """
+    Draw a flashing, centered, big red "Target locked!" warning.
+
+    The text blinks with a TARGET_LOCK_FLASH_FRAMES cycle so it reads
+    as an active alert. If distance_text is provided it is drawn directly
+    underneath the warning (the closest locked target's distance).
+    """
+    if (frame_number // TARGET_LOCK_FLASH_FRAMES) % 2:
+        return
+
+    text = "Target locked!"
+    scale = 2.5
+    thickness = 6
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    text_width, text_height = cv2.getTextSize(
+        text,
+        font,
+        scale,
+        thickness,
+    )[0]
+
+    height, width = frame.shape[:2]
+    x = (width - text_width) // 2
+    y = (height + text_height) // 2
+
+    cv2.putText(
+        frame,
+        text,
+        (x, y),
+        font,
+        scale,
+        (0, 0, 0),
+        thickness + 3,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        frame,
+        text,
+        (x, y),
+        font,
+        scale,
+        (0, 0, 255),
+        thickness,
+        cv2.LINE_AA,
+    )
+
+    if distance_text:
+        sub_scale = 1.6
+        sub_thickness = 5
+
+        sub_width, sub_height = cv2.getTextSize(
+            distance_text,
+            font,
+            sub_scale,
+            sub_thickness,
+        )[0]
+        sub_x = (width - sub_width) // 2
+        sub_y = y + sub_height + int(text_height * 0.15) + 10
+
+        cv2.putText(
+            frame,
+            distance_text,
+            (sub_x, sub_y),
+            font,
+            sub_scale,
+            (0, 0, 0),
+            sub_thickness + 2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            distance_text,
+            (sub_x, sub_y),
+            font,
+            sub_scale,
+            (0, 0, 255),
+            sub_thickness,
             cv2.LINE_AA,
         )
 
@@ -307,6 +394,8 @@ def annotate_frame(
             del pending_classifications[tid]
 
     result = detector.track(frame)
+    target_locked = False
+    closest_distance_m = None
 
     for detection in result.boxes:
         x1, y1, x2, y2 = map(int, detection.xyxy[0].tolist())
@@ -375,6 +464,8 @@ def annotate_frame(
 
         # Geometry engine: estimate depth from the known vehicle
         # height and its pixel height in the current frame.
+        vehicle_locked = False
+
         if geometry is not None and dimensions:
             frame_height, frame_width = frame.shape[:2]
 
@@ -388,7 +479,24 @@ def annotate_frame(
                 if distance_m is not None:
                     lines.append(format_distance(distance_m))
 
-        draw_label(frame, box, lines)
+                    if distance_m < TARGET_LOCK_DISTANCE_M:
+                        vehicle_locked = True
+                        target_locked = True
+                        if (
+                            closest_distance_m is None
+                            or distance_m < closest_distance_m
+                        ):
+                            closest_distance_m = distance_m
+
+        box_color = (0, 0, 255) if vehicle_locked else (0, 255, 0)
+        draw_label(frame, box, lines, box_color=box_color)
+
+    if target_locked:
+        draw_target_locked(
+            frame,
+            frame_number,
+            format_distance_feet(closest_distance_m) if closest_distance_m is not None else None,
+        )
 
     cv2.putText(
         frame,
@@ -532,7 +640,7 @@ def run_video(
                 cv2.ROTATE_90_COUNTERCLOCKWISE,
             )
 
-        annotate_frame(
+        frame = annotate_frame(
             frame=frame,
             frame_number=frame_number,
             detector=detector,
