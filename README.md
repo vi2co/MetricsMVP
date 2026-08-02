@@ -317,7 +317,7 @@ curl "http://127.0.0.1:8000/v1/process?url=rtsp://127.0.0.1:8554/la_demo&max_sec
 | `max_seconds`     | both       | Process at most N seconds of video content (video time, not wall time). |
 | `max_wall_seconds`| both       | Process at most N seconds of real time (processing is slower than real time on CPU). |
 | `center_only`     | both       | Overlay only vehicles near the frame center (`true`) — the ones in front of the camera. |
-| `center_tolerance`| both       | Max horizontal offset from frame center, as a fraction of frame width (default `0.25`, range `0`–`0.5`). Used with `center_only`. |
+| `center_tolerance`| both       | Max horizontal offset from frame center, as a fraction of frame width (default `0.15`, i.e. a 30%-wide center window; range `0`–`0.5`). Used with `center_only`. |
 
 Response headers: `X-Processed-Frames`, `X-Frame-Rate`, `X-Resolution`.
 

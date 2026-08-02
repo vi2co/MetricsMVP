@@ -270,7 +270,7 @@ def annotate_frame(
     last_classified_frame=None,
     executor=None,
     center_only=False,
-    center_tolerance=0.25,
+    center_tolerance=0.15,
 ):
     """
     Run detection, tracking, classification, and metric overlays on one frame.

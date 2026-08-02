@@ -274,7 +274,7 @@ def process_video_source(
     max_seconds: float | None,
     max_wall_seconds: float | None,
     center_only: bool = False,
-    center_tolerance: float = 0.25,
+    center_tolerance: float = 0.15,
 ) -> dict[str, Any]:
     """
     Run the MetricsAI overlay pipeline over a video source.
@@ -498,12 +498,13 @@ def process_upload(
         ),
     ),
     center_tolerance: float = Query(
-        default=0.25,
+        default=0.15,
         ge=0,
         le=0.5,
         description=(
             "Max horizontal offset from the frame center, as a "
-            "fraction of frame width, for center_only vehicles."
+            "fraction of frame width (default 0.15 = a 30% wide "
+            "center window), for center_only vehicles."
         ),
     ),
 ):
@@ -584,12 +585,13 @@ def process_url(
         ),
     ),
     center_tolerance: float = Query(
-        default=0.25,
+        default=0.15,
         ge=0,
         le=0.5,
         description=(
             "Max horizontal offset from the frame center, as a "
-            "fraction of frame width, for center_only vehicles."
+            "fraction of frame width (default 0.15 = a 30% wide "
+            "center window), for center_only vehicles."
         ),
     ),
 ):
