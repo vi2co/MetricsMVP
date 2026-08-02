@@ -19,8 +19,10 @@ Run:
 import argparse
 import logging
 import shutil
+import subprocess
 import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -58,6 +60,7 @@ logger = logging.getLogger("metricsai.api")
 
 ALLOWED_URL_SCHEMES = {"http", "https", "rtsp", "rtmp", "udp", "file"}
 OPEN_TIMEOUT_MS = 10_000
+PROGRESS_EVERY = 100
 
 # Pipeline configuration from the command line; the models themselves are
 # loaded lazily on the first request so /health works immediately.
@@ -132,6 +135,118 @@ def rotate_frame(frame) -> Any:
     return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
 
+class FfmpegVideoWriter:
+    """
+    Stream annotated frames into ffmpeg for H.264 encoding.
+
+    OpenCV's mp4v writer mangles fractional frame rates (e.g. 29.97),
+    which makes some players run the output too fast. ffmpeg stores
+    exact 30000/1001-style timestamps, so the output plays at the
+    source speed.
+    """
+
+    def __init__(self, output_path: str, width: int, height: int, fps: float):
+        command = [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "bgr24",
+            "-s",
+            f"{width}x{height}",
+            "-r",
+            f"{fps:.6f}",
+            "-i",
+            "-",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-pix_fmt",
+            "yuv420p",
+            output_path,
+        ]
+        self.process = subprocess.Popen(command, stdin=subprocess.PIPE)
+        self.frames_written = 0
+
+    def write(self, frame) -> None:
+        try:
+            self.process.stdin.write(frame.tobytes())
+        except (BrokenPipeError, OSError) as error:
+            raise ValueError(f"ffmpeg encoder failed: {error}") from error
+
+        self.frames_written += 1
+
+        if self.process.poll() is not None:
+            raise ValueError("ffmpeg encoder exited before the video finished.")
+
+    def finish(self) -> None:
+        """Close the pipe and wait for ffmpeg to finalize the file."""
+        if self.process.stdin is not None:
+            self.process.stdin.close()
+
+        returncode = self.process.wait()
+
+        if returncode != 0:
+            raise ValueError(f"ffmpeg exited with code {returncode}.")
+
+    def abort(self) -> None:
+        """Best-effort shutdown that never raises."""
+        if self.process.poll() is not None:
+            return
+
+        try:
+            if self.process.stdin is not None:
+                self.process.stdin.close()
+        except OSError:
+            pass
+
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+
+
+class _Cv2VideoWriter:
+    """Fallback when ffmpeg is not installed."""
+
+    def __init__(self, output_path: str, width: int, height: int, fps: float):
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        self.writer = cv2.VideoWriter(
+            output_path,
+            fourcc,
+            fps,
+            (width, height),
+        )
+
+        if not self.writer.isOpened():
+            raise ValueError(f"Could not start video writer for {output_path}.")
+
+    def write(self, frame) -> None:
+        self.writer.write(frame)
+
+    def finish(self) -> None:
+        self.writer.release()
+
+    def abort(self) -> None:
+        self.writer.release()
+
+
+def open_video_writer(output_path: str, width: int, height: int, fps: float):
+    if shutil.which("ffmpeg"):
+        return FfmpegVideoWriter(output_path, width, height, fps)
+
+    logger.warning(
+        "ffmpeg not found on PATH; falling back to the OpenCV mp4v "
+        "writer, which may play too fast in some players."
+    )
+    return _Cv2VideoWriter(output_path, width, height, fps)
+
+
 def process_video_source(
     source: int | str,
     output_path: str,
@@ -139,6 +254,7 @@ def process_video_source(
     rotate: bool,
     max_frames: int | None,
     max_seconds: float | None,
+    max_wall_seconds: float | None,
 ) -> dict[str, Any]:
     """
     Run the MetricsAI overlay pipeline over a video source.
@@ -169,18 +285,13 @@ def process_video_source(
     if not fps or fps <= 0 or fps > 120:
         fps = DEFAULT_RECORD_FPS
 
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-
-    if not writer.isOpened():
-        video.release()
-        raise ValueError(f"Could not start video writer for {output_path}.")
-
+    writer = open_video_writer(output_path, width, height, fps)
     executor = ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS)
     prediction_cache: dict = {}
     pending_classifications: dict = {}
     last_classified_frame: dict = {}
     frame_number = 0
+    started = time.perf_counter()
 
     try:
         with _process_lock:
@@ -207,6 +318,21 @@ def process_video_source(
                 if max_seconds and frame_number / fps >= max_seconds:
                     break
 
+                if (
+                    max_wall_seconds
+                    and time.perf_counter() - started >= max_wall_seconds
+                ):
+                    break
+
+                if frame_number % PROGRESS_EVERY == 0:
+                    elapsed = time.perf_counter() - started
+                    print(
+                        f"Processed {frame_number} frames "
+                        f"({frame_number / fps:.1f}s of content, "
+                        f"{elapsed:.0f}s wall).",
+                        flush=True,
+                    )
+
                 success, frame = video.read()
 
                 if not success:
@@ -214,13 +340,22 @@ def process_video_source(
 
                 if rotate:
                     frame = rotate_frame(frame)
+
+        writer.finish()
     finally:
         executor.shutdown(wait=False)
-        writer.release()
         video.release()
+        writer.abort()
 
     if frame_number == 0:
         raise ValueError("Video source produced no frames.")
+
+    elapsed = time.perf_counter() - started
+    print(
+        f"Done: {frame_number} frames, {frame_number / fps:.1f}s of content "
+        f"in {elapsed:.0f}s wall time -> {output_path}",
+        flush=True,
+    )
 
     return {
         "frames": frame_number,
@@ -320,6 +455,14 @@ def process_upload(
         gt=0,
         description="Process at most this many seconds of video.",
     ),
+    max_wall_seconds: float = Query(
+        default=None,
+        gt=0,
+        description=(
+            "Process at most this many seconds of real time "
+            "(processing is slower than real time on CPU)."
+        ),
+    ),
 ):
     suffix = Path(video.filename or "upload.mp4").suffix or ".mp4"
     workdir = Path(tempfile.mkdtemp(prefix="metricsai_upload_"))
@@ -339,6 +482,7 @@ def process_upload(
             rotate=rotate,
             max_frames=max_frames,
             max_seconds=max_seconds,
+            max_wall_seconds=max_wall_seconds,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -376,6 +520,14 @@ def process_url(
         gt=0,
         description="Process at most this many seconds of stream.",
     ),
+    max_wall_seconds: float = Query(
+        default=None,
+        gt=0,
+        description=(
+            "Process at most this many seconds of real time "
+            "(processing is slower than real time on CPU)."
+        ),
+    ),
 ):
     source = resolve_url_source(url)
     workdir = Path(tempfile.mkdtemp(prefix="metricsai_url_"))
@@ -389,6 +541,7 @@ def process_url(
             rotate=rotate,
             max_frames=max_frames,
             max_seconds=max_seconds,
+            max_wall_seconds=max_wall_seconds,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

@@ -310,11 +310,12 @@ curl "http://127.0.0.1:8000/v1/process?url=rtsp://127.0.0.1:8554/la_demo&max_sec
 
 ### Query parameters
 
-| Param          | Applies to | Meaning                                              |
-| -------------- | ---------- | ---------------------------------------------------- |
-| `rotate`       | both       | Rotate frames 90 degrees counterclockwise (`true`).  |
-| `max_frames`   | both       | Process at most N frames.                            |
-| `max_seconds`  | both       | Process at most N seconds of video/stream.           |
+| Param             | Applies to | Meaning                                                     |
+| ----------------- | ---------- | ----------------------------------------------------------- |
+| `rotate`          | both       | Rotate frames 90 degrees counterclockwise (`true`).         |
+| `max_frames`      | both       | Process at most N frames.                                   |
+| `max_seconds`     | both       | Process at most N seconds of video content (video time, not wall time). |
+| `max_wall_seconds`| both       | Process at most N seconds of real time (processing is slower than real time on CPU). |
 
 Response headers: `X-Processed-Frames`, `X-Frame-Rate`, `X-Resolution`.
 
@@ -323,11 +324,71 @@ Response headers: `X-Processed-Frames`, `X-Frame-Rate`, `X-Resolution`.
 - `GET /health` — liveness check (models load lazily on first processing request).
 - `GET /` — endpoint listing.
 
+### Testing the API
+
+Start the server, then run these checks:
+
+```bash
+python api_server.py --identifier fake --port 8000
+```
+
+1. Health check:
+
+```bash
+curl http://127.0.0.1:8000/health
+# {"status":"ok","pipeline_loaded":false,"identifier":"fake"}
+```
+
+2. Quick smoke test with the small demo clip (returns in seconds):
+
+```bash
+curl "http://127.0.0.1:8000/v1/process?url=$(pwd)/demo_video.mp4&rotate=true&max_frames=10" \
+  -o /tmp/smoke.mp4
+
+# Expect: HTTP 200, X-Processed-Frames: 10, X-Frame-Rate: ~33
+# The 10-frame output should be ~0.3s long and show vehicle boxes + overlay:
+ffprobe -v error -show_entries format=duration -of csv=p=0 /tmp/smoke.mp4
+ffplay -autoexit /tmp/smoke.mp4
+```
+
+3. Process a clip of the large 4K demo feed:
+
+```bash
+curl "http://127.0.0.1:8000/v1/process?url=$(pwd)/la_demo.mp4&max_seconds=10" \
+  -o /tmp/la_demo_10s.mp4
+```
+
+`max_seconds` is content time, not wall time: 10 s of 4K video is ~300
+frames and takes ~20 s of wall time on CPU, with progress logged to the
+server console every 100 frames. Verify the output keeps the source speed:
+
+```bash
+ffprobe -v error -show_entries format=duration -of csv=p=0 /tmp/la_demo_10s.mp4   # ~10.0 s
+ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,r_frame_rate -of csv=p=0 /tmp/la_demo_10s.mp4
+# h264, ~29.97 fps
+```
+
+4. RTSP live-stream test (optional; requires `tools/stream_file.py`):
+
+```bash
+tools/stream_file.py la_demo.mp4
+curl "http://127.0.0.1:8000/v1/process?url=rtsp://127.0.0.1:8554/la_demo&max_seconds=10&max_wall_seconds=30" \
+  -o /tmp/rtsp_test.mp4
+```
+
 Notes:
 
 - Processing is synchronous; a large video returns once all frames are overlaid.
 - The shared YOLO model serializes concurrent processing requests.
 - The demo clip usually needs `rotate=true`.
+- Output is H.264 in an MP4 container, encoded via ffmpeg with exact
+  timestamps, so playback speed always matches the source. If ffmpeg is
+  not installed, the server falls back to OpenCV's mp4v writer (known to
+  play too fast in some players at fractional frame rates).
+- `max_seconds` caps content time: 30 s of 4K video at ~30 fps is ~900
+  frames and takes minutes of wall time on CPU — pair it with
+  `max_wall_seconds` for a real-time bound, or use `max_frames` for
+  quick checks.
 
 ## Current MVP Limitations
 
