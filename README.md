@@ -101,6 +101,25 @@ Tracked COCO classes:
 car, motorcycle, bus, truck
 ```
 
+### `traffic_signal.py`
+
+Traffic signal detection and state analyzer.
+
+Responsibilities:
+
+- Load `yolo11s.pt`
+- Detect traffic lights (COCO class: `traffic light`)
+- Analyze the detected ROI via HSV color segmentation to determine red, yellow, or green state
+- Return the position, confidence, and state of each detected signal
+
+State analysis by HSV thresholds:
+
+```text
+Red:   H 0-10, 170-180  |  S >= 50  |  V >= 50
+Yellow: H 15-35          |  S >= 50  |  V >= 50
+Green: H 40-90          |  S >= 50  |  V >= 50
+```
+
 ### `vehicle_classifier.py`
 
 Vehicle identity provider interface.
@@ -205,6 +224,14 @@ Useful when no real vehicle identifier API key is available.
 
 ```bash
 python main.py --source demo_video.mp4 --fake-identifier
+```
+
+### Traffic Signal Detection
+
+Overlay traffic light state on the detected signal regions.
+
+```bash
+python main.py --source demo_video.mp4 --fake-identifier --traffic-signals
 ```
 
 ### Live Camera / Continuity Camera
@@ -420,7 +447,6 @@ The vehicle demo is the first proof-of-concept for a broader Physical Object Int
 Future object categories may include:
 
 - Street signs
-- Traffic lights
 - Trash cans
 - Road barriers
 - Construction equipment

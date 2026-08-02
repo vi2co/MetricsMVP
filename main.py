@@ -18,6 +18,7 @@ from geometry import (
     is_fully_visible,
 )
 from rekor_vehicle_identifier import RekorVehicleIdentifier
+from traffic_signal import STATE_COLORS, TrafficSignalDetector
 from vehicle_classifier import VehicleClassifier
 from vehicle_detector import VehicleDetector
 
@@ -562,6 +563,7 @@ def run_video(
     rotate: bool = ROTATE_VIDEO,
     record_path: str = DEFAULT_RECORD_PATH,
     recording_enabled: bool = False,
+    traffic_signal: TrafficSignalDetector | None = None,
 ):
     video = cv2.VideoCapture(source)
 
@@ -640,17 +642,142 @@ def run_video(
                 cv2.ROTATE_90_COUNTERCLOCKWISE,
             )
 
-        frame = annotate_frame(
-            frame=frame,
-            frame_number=frame_number,
-            detector=detector,
-            classifier=classifier,
-            car_api=car_api,
-            geometry=geometry,
-            prediction_cache=prediction_cache,
-            pending_classifications=pending_classifications,
-            last_classified_frame=last_classified_frame,
-            executor=executor,
+        result = detector.track(frame)
+
+        for detection in result.boxes:
+            x1, y1, x2, y2 = map(
+                int,
+                detection.xyxy[0].tolist(),
+            )
+
+            box = (x1, y1, x2, y2)
+            class_id = int(detection.cls[0])
+            detection_conf = float(detection.conf[0])
+            box_width = x2 - x1
+
+            track_id = (
+                int(detection.id[0])
+                if detection.id is not None
+                else None
+            )
+
+            identity, identity_conf, trim, dimensions = (
+                prediction_cache.get(
+                    track_id,
+                    ("Not classified", 0.0, None, None),
+                )
+            )
+
+            should_classify = (
+                track_id is not None
+                and box_width >= MIN_CROP_WIDTH
+                and (
+                    track_id not in prediction_cache
+                    or frame_number % CLASSIFY_EVERY == 0
+                )
+            )
+
+            if should_classify:
+                identity, identity_conf, trim, dimensions = (
+                    classify_and_get_metrics(
+                        frame=frame,
+                        box=box,
+                        classifier=classifier,
+                        car_api=car_api,
+                        track_id=track_id,
+                    )
+                )
+
+                prediction_cache[track_id] = (
+                    identity,
+                    identity_conf,
+                    trim,
+                    dimensions,
+                )
+
+            # Identified vehicles display make/model/year, trim,
+            # and physical dimensions. Others show box only.
+            lines = []
+
+            if parse_vehicle_name(identity):
+                lines.append(f"{identity}: {identity_conf:.1%}")
+
+                if dimensions:
+                    lines.extend(metric_lines(dimensions))
+                elif trim:
+                    lines.append(f"Reference trim: {trim}")
+
+            # Geometry engine: estimate depth from the known vehicle
+            # height and its pixel height in the current frame.
+            if geometry is not None and dimensions:
+                frame_height, frame_width = frame.shape[:2]
+
+                if is_fully_visible(box, frame_width, frame_height):
+                    distance_m = geometry.estimate_distance_m(
+                        real_size_in=dimensions.get("height"),
+                        pixel_size=y2 - y1,
+                        frame_width_px=frame_width,
+                    )
+
+                    if distance_m is not None:
+                        lines.append(format_distance(distance_m))
+
+            draw_label(frame, box, lines)
+
+        if traffic_signal is not None:
+            signals = traffic_signal.detect(frame)
+            signal_counts = {"red": 0, "yellow": 0, "green": 0, "unknown": 0}
+            for sig in signals:
+                bx1, by1, bx2, by2 = sig["box"]
+                state = sig["state"]
+                color = STATE_COLORS[state]
+                signal_counts[state] += 1
+                cv2.rectangle(
+                    frame,
+                    (bx1, by1),
+                    (bx2, by2),
+                    color,
+                    2,
+                )
+                cv2.putText(
+                    frame,
+                    state.upper(),
+                    (bx1, by1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    color,
+                    2,
+                    cv2.LINE_AA,
+                )
+                cx = bx1 + (bx2 - bx1) // 2
+                cy = by1 - 18
+                cv2.circle(frame, (cx, cy), 6, color, -1)
+
+            summary_parts = []
+            for state_name in ("red", "yellow", "green"):
+                count = signal_counts[state_name]
+                if count > 0:
+                    summary_parts.append(f"{state_name.upper()}: {count}")
+            if summary_parts:
+                cv2.putText(
+                    frame,
+                    "Traffic: " + " | ".join(summary_parts),
+                    (20, 70),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.85,
+                    (255, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+        cv2.putText(
+            frame,
+            f"Vehicles: {len(result.boxes)}",
+            (20, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (255, 255, 255),
+            2,
         )
 
         button_rect = draw_record_button(frame, recording_enabled)
@@ -763,6 +890,12 @@ def parse_args() -> argparse.Namespace:
         help=f"Output path for --record. Defaults to {DEFAULT_RECORD_PATH}.",
     )
 
+    parser.add_argument(
+        "--traffic-signals",
+        action="store_true",
+        help="Enable traffic signal detection and state overlay.",
+    )
+
     rotation = parser.add_mutually_exclusive_group()
 
     rotation.add_argument(
@@ -825,6 +958,12 @@ def main():
     feed_type = "live feed" if is_live else "video file"
     print(f"Starting MetricsAI on {feed_type}: {source}")
 
+    traffic_signal = None
+    if args.traffic_signals:
+        print("Loading traffic signal detector...")
+        traffic_signal = TrafficSignalDetector()
+        print("Traffic signal detector ready.")
+
     if args.record:
         print(f"Recording enabled: {args.record_path}")
 
@@ -838,6 +977,7 @@ def main():
         rotate=rotate,
         record_path=args.record_path,
         recording_enabled=args.record,
+        traffic_signal=traffic_signal,
     )
 
 
