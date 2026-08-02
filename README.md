@@ -312,10 +312,12 @@ curl "http://127.0.0.1:8000/v1/process?url=rtsp://127.0.0.1:8554/la_demo&max_sec
 
 | Param             | Applies to | Meaning                                                     |
 | ----------------- | ---------- | ----------------------------------------------------------- |
-| `rotate`          | both       | Rotate frames 90 degrees counterclockwise (`true`).         |
+| `rotate`          | both       | `auto` (default) rotates portrait videos (height > width) to landscape; `true` always rotates; `false` never rotates. |
 | `max_frames`      | both       | Process at most N frames.                                   |
 | `max_seconds`     | both       | Process at most N seconds of video content (video time, not wall time). |
 | `max_wall_seconds`| both       | Process at most N seconds of real time (processing is slower than real time on CPU). |
+| `center_only`     | both       | Overlay only vehicles near the frame center (`true`) — the ones in front of the camera. |
+| `center_tolerance`| both       | Max horizontal offset from frame center, as a fraction of frame width (default `0.25`, range `0`–`0.5`). Used with `center_only`. |
 
 Response headers: `X-Processed-Frames`, `X-Frame-Rate`, `X-Resolution`.
 
@@ -342,8 +344,13 @@ curl http://127.0.0.1:8000/health
 2. Quick smoke test with the small demo clip (returns in seconds):
 
 ```bash
-curl "http://127.0.0.1:8000/v1/process?url=$(pwd)/demo_video.mp4&rotate=true&max_frames=10" \
+# auto-rotation: demo_video.mp4 is portrait and is rotated automatically
+curl "http://127.0.0.1:8000/v1/process?url=$(pwd)/demo_video.mp4&max_frames=10" \
   -o /tmp/smoke.mp4
+
+# Center-only variant: overlay just the vehicles ahead of the camera
+curl "http://127.0.0.1:8000/v1/process?url=$(pwd)/demo_video.mp4&center_only=true&max_frames=10" \
+  -o /tmp/smoke_center.mp4
 
 # Expect: HTTP 200, X-Processed-Frames: 10, X-Frame-Rate: ~33
 # The 10-frame output should be ~0.3s long and show vehicle boxes + overlay:
@@ -380,7 +387,7 @@ Notes:
 
 - Processing is synchronous; a large video returns once all frames are overlaid.
 - The shared YOLO model serializes concurrent processing requests.
-- The demo clip usually needs `rotate=true`.
+- Portrait clips (e.g. `demo_video.mp4`) are auto-rotated to landscape by default.
 - Output is H.264 in an MP4 container, encoded via ffmpeg with exact
   timestamps, so playback speed always matches the source. If ffmpeg is
   not installed, the server falls back to OpenCV's mp4v writer (known to

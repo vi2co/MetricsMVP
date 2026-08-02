@@ -269,6 +269,8 @@ def annotate_frame(
     pending_classifications=None,
     last_classified_frame=None,
     executor=None,
+    center_only=False,
+    center_tolerance=0.25,
 ):
     """
     Run detection, tracking, classification, and metric overlays on one frame.
@@ -279,6 +281,10 @@ def annotate_frame(
     When classification is enabled (prediction_cache, pending_classifications,
     last_classified_frame, and executor are provided), tracked vehicles are
     classified asynchronously and metrics overlay after each result arrives.
+
+    With center_only=True, only vehicles whose box center lies within
+    center_tolerance (fraction of frame width) of the frame center get
+    an overlay; everything else is skipped entirely.
     """
     if prediction_cache is None:
         prediction_cache = {}
@@ -309,6 +315,13 @@ def annotate_frame(
         class_id = int(detection.cls[0])
         detection_conf = float(detection.conf[0])
         box_width = x2 - x1
+
+        if center_only:
+            frame_width = frame.shape[1]
+            box_center_x = (x1 + x2) / 2
+
+            if abs(box_center_x - frame_width / 2) > frame_width * center_tolerance:
+                continue
 
         track_id = (
             int(detection.id[0])

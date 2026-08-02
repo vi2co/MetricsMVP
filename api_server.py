@@ -25,7 +25,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import cv2
 import uvicorn
@@ -133,6 +133,24 @@ def get_pipeline() -> PipelineState:
 
 def rotate_frame(frame) -> Any:
     return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+
+def should_rotate(rotate_mode: str, frame) -> bool:
+    """
+    Resolve the rotate option for a frame.
+
+    "true" always rotates, "false" never does, and "auto" rotates
+    portrait frames (height > width) so phone/dashcam clips display
+    as landscape.
+    """
+    if rotate_mode == "true":
+        return True
+
+    if rotate_mode == "false":
+        return False
+
+    height, width = frame.shape[:2]
+    return height > width
 
 
 class FfmpegVideoWriter:
@@ -251,10 +269,12 @@ def process_video_source(
     source: int | str,
     output_path: str,
     *,
-    rotate: bool,
+    rotate: str = "auto",
     max_frames: int | None,
     max_seconds: float | None,
     max_wall_seconds: float | None,
+    center_only: bool = False,
+    center_tolerance: float = 0.25,
 ) -> dict[str, Any]:
     """
     Run the MetricsAI overlay pipeline over a video source.
@@ -276,7 +296,9 @@ def process_video_source(
         video.release()
         raise ValueError("Video source produced no readable frames.")
 
-    if rotate:
+    rotate_frames = should_rotate(rotate, frame)
+
+    if rotate_frames:
         frame = rotate_frame(frame)
 
     height, width = frame.shape[:2]
@@ -307,6 +329,8 @@ def process_video_source(
                     pending_classifications=pending_classifications,
                     last_classified_frame=last_classified_frame,
                     executor=executor,
+                    center_only=center_only,
+                    center_tolerance=center_tolerance,
                 )
 
                 writer.write(frame)
@@ -338,7 +362,7 @@ def process_video_source(
                 if not success:
                     break
 
-                if rotate:
+                if rotate_frames:
                     frame = rotate_frame(frame)
 
         writer.finish()
@@ -441,9 +465,12 @@ def health() -> dict:
 def process_upload(
     background_tasks: BackgroundTasks,
     video: UploadFile = File(..., description="Video file to process"),
-    rotate: bool = Query(
-        default=False,
-        description="Rotate frames 90 degrees counterclockwise.",
+    rotate: Literal["auto", "true", "false"] = Query(
+        default="auto",
+        description=(
+            "auto rotates portrait videos (height > width) to landscape; "
+            "true always rotates; false never rotates."
+        ),
     ),
     max_frames: int = Query(
         default=None,
@@ -461,6 +488,22 @@ def process_upload(
         description=(
             "Process at most this many seconds of real time "
             "(processing is slower than real time on CPU)."
+        ),
+    ),
+    center_only: bool = Query(
+        default=False,
+        description=(
+            "Overlay only vehicles near the frame center "
+            "(the ones in front of the camera)."
+        ),
+    ),
+    center_tolerance: float = Query(
+        default=0.25,
+        ge=0,
+        le=0.5,
+        description=(
+            "Max horizontal offset from the frame center, as a "
+            "fraction of frame width, for center_only vehicles."
         ),
     ),
 ):
@@ -483,6 +526,8 @@ def process_upload(
             max_frames=max_frames,
             max_seconds=max_seconds,
             max_wall_seconds=max_wall_seconds,
+            center_only=center_only,
+            center_tolerance=center_tolerance,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -506,9 +551,12 @@ def process_url(
             "(http, https, rtsp, rtmp, udp, file)."
         ),
     ),
-    rotate: bool = Query(
-        default=False,
-        description="Rotate frames 90 degrees counterclockwise.",
+    rotate: Literal["auto", "true", "false"] = Query(
+        default="auto",
+        description=(
+            "auto rotates portrait videos (height > width) to landscape; "
+            "true always rotates; false never rotates."
+        ),
     ),
     max_frames: int = Query(
         default=None,
@@ -528,6 +576,22 @@ def process_url(
             "(processing is slower than real time on CPU)."
         ),
     ),
+    center_only: bool = Query(
+        default=False,
+        description=(
+            "Overlay only vehicles near the frame center "
+            "(the ones in front of the camera)."
+        ),
+    ),
+    center_tolerance: float = Query(
+        default=0.25,
+        ge=0,
+        le=0.5,
+        description=(
+            "Max horizontal offset from the frame center, as a "
+            "fraction of frame width, for center_only vehicles."
+        ),
+    ),
 ):
     source = resolve_url_source(url)
     workdir = Path(tempfile.mkdtemp(prefix="metricsai_url_"))
@@ -542,6 +606,8 @@ def process_url(
             max_frames=max_frames,
             max_seconds=max_seconds,
             max_wall_seconds=max_wall_seconds,
+            center_only=center_only,
+            center_tolerance=center_tolerance,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
