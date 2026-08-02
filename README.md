@@ -70,6 +70,16 @@ Responsibilities:
 - Draw overlays
 - Handle recording with an on-screen start/stop button
 
+### `api_server.py`
+
+REST API server wrapping the same pipeline.
+
+Responsibilities:
+
+- Accept video uploads (`POST /v1/process`) or file/stream URLs (`GET /v1/process`)
+- Run the shared frame pipeline (`annotate_frame` in `main.py`)
+- Return the overlaid video as an MP4 download
+
 ### `vehicle_detector.py`
 
 YOLO11 wrapper.
@@ -263,6 +273,61 @@ YOLO weights are not committed. Download or place the model file locally:
 ```text
 yolo11s.pt
 ```
+
+## REST API
+
+`api_server.py` exposes the same pipeline over HTTP: send a video and get it back with the MetricsAI overlay baked in.
+
+### Start the server
+
+```bash
+python api_server.py --identifier fake --port 8000
+```
+
+Flags:
+
+- `--identifier fake|sighthound|rekor` — vehicle identity provider. `fake` needs no credentials and is the default demo mode; the others require their `.env` keys.
+- `--camera <preset>` / `--focal-equiv <mm>` — depth-estimation settings (same as `main.py`).
+- `--host`, `--port` — listen address, default `0.0.0.0:8000`.
+
+### Upload a video file
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/process \
+  -F "video=@demo_video.mp4" \
+  -o overlay.mp4
+```
+
+### Process a local file or stream URL
+
+```bash
+# local path on the server
+curl "http://127.0.0.1:8000/v1/process?url=/abs/path/demo_video.mp4" -o overlay.mp4
+
+# live RTSP / HTTP stream (cap with max_seconds; streams may never end)
+curl "http://127.0.0.1:8000/v1/process?url=rtsp://127.0.0.1:8554/la_demo&max_seconds=30" -o overlay.mp4
+```
+
+### Query parameters
+
+| Param          | Applies to | Meaning                                              |
+| -------------- | ---------- | ---------------------------------------------------- |
+| `rotate`       | both       | Rotate frames 90 degrees counterclockwise (`true`).  |
+| `max_frames`   | both       | Process at most N frames.                            |
+| `max_seconds`  | both       | Process at most N seconds of video/stream.           |
+
+Response headers: `X-Processed-Frames`, `X-Frame-Rate`, `X-Resolution`.
+
+### Other endpoints
+
+- `GET /health` — liveness check (models load lazily on first processing request).
+- `GET /` — endpoint listing.
+
+Notes:
+
+- Processing is synchronous; a large video returns once all frames are overlaid.
+- The shared YOLO model serializes concurrent processing requests.
+- The demo clip usually needs `rotate=true`.
 
 ## Current MVP Limitations
 

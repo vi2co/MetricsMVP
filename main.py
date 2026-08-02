@@ -258,6 +258,138 @@ def draw_label(frame, box, lines):
         )
 
 
+def annotate_frame(
+    frame,
+    frame_number,
+    detector,
+    classifier,
+    car_api=None,
+    geometry=None,
+    prediction_cache=None,
+    pending_classifications=None,
+    last_classified_frame=None,
+    executor=None,
+):
+    """
+    Run detection, tracking, classification, and metric overlays on one frame.
+
+    Returns the annotated frame. Shared by the CLI player (main.py) and
+    the REST API (api_server.py) so both consume the same pipeline.
+
+    When classification is enabled (prediction_cache, pending_classifications,
+    last_classified_frame, and executor are provided), tracked vehicles are
+    classified asynchronously and metrics overlay after each result arrives.
+    """
+    if prediction_cache is None:
+        prediction_cache = {}
+
+    if pending_classifications is None:
+        pending_classifications = {}
+
+    if last_classified_frame is None:
+        last_classified_frame = {}
+
+    for tid in list(pending_classifications):
+        future = pending_classifications[tid]
+
+        if future.done():
+            try:
+                prediction_cache[tid] = future.result()
+            except Exception as error:
+                print(f"Classification error for track {tid}: {error}")
+                prediction_cache[tid] = ("Unknown", 0.0, None, None)
+            del pending_classifications[tid]
+
+    result = detector.track(frame)
+
+    for detection in result.boxes:
+        x1, y1, x2, y2 = map(int, detection.xyxy[0].tolist())
+
+        box = (x1, y1, x2, y2)
+        class_id = int(detection.cls[0])
+        detection_conf = float(detection.conf[0])
+        box_width = x2 - x1
+
+        track_id = (
+            int(detection.id[0])
+            if detection.id is not None
+            else None
+        )
+
+        identity, identity_conf, trim, dimensions = (
+            prediction_cache.get(
+                track_id,
+                ("Not classified", 0.0, None, None),
+            )
+        )
+
+        should_classify = (
+            executor is not None
+            and track_id is not None
+            and box_width >= MIN_CROP_WIDTH
+            and track_id not in pending_classifications
+            and (
+                track_id not in prediction_cache
+                or frame_number
+                - last_classified_frame.get(track_id, -1)
+                >= CLASSIFY_EVERY
+            )
+        )
+
+        if should_classify:
+            future = executor.submit(
+                classify_and_get_metrics,
+                frame=frame,
+                box=box,
+                classifier=classifier,
+                car_api=car_api,
+                track_id=track_id,
+            )
+            pending_classifications[track_id] = future
+            last_classified_frame[track_id] = frame_number
+
+        # Identified vehicles display make/model/year, trim,
+        # and physical dimensions. Others show box only.
+        lines = []
+
+        if parse_vehicle_name(identity):
+            lines.append(f"{identity}: {identity_conf:.1%}")
+
+            if dimensions:
+                lines.extend(metric_lines(dimensions))
+            elif trim:
+                lines.append(f"Reference trim: {trim}")
+
+        # Geometry engine: estimate depth from the known vehicle
+        # height and its pixel height in the current frame.
+        if geometry is not None and dimensions:
+            frame_height, frame_width = frame.shape[:2]
+
+            if is_fully_visible(box, frame_width, frame_height):
+                distance_m = geometry.estimate_distance_m(
+                    real_size_in=dimensions.get("height"),
+                    pixel_size=y2 - y1,
+                    frame_width_px=frame_width,
+                )
+
+                if distance_m is not None:
+                    lines.append(format_distance(distance_m))
+
+        draw_label(frame, box, lines)
+
+    cv2.putText(
+        frame,
+        f"Vehicles: {len(result.boxes)}",
+        (20, 40),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1,
+        (255, 255, 255),
+        2,
+    )
+
+    return frame
+
+
 def classify_and_get_metrics(
     frame,
     box,
@@ -381,109 +513,23 @@ def run_video(
 
         failed_reads = 0
 
-        for tid in list(pending_classifications):
-            future = pending_classifications[tid]
-            if future.done():
-                try:
-                    prediction_cache[tid] = future.result()
-                except Exception as error:
-                    print(f"Classification error for track {tid}: {error}")
-                    prediction_cache[tid] = ("Unknown", 0.0, None, None)
-                del pending_classifications[tid]
-
         if rotate:
             frame = cv2.rotate(
                 frame,
                 cv2.ROTATE_90_COUNTERCLOCKWISE,
             )
 
-        result = detector.track(frame)
-
-        for detection in result.boxes:
-            x1, y1, x2, y2 = map(
-                int,
-                detection.xyxy[0].tolist(),
-            )
-
-            box = (x1, y1, x2, y2)
-            class_id = int(detection.cls[0])
-            detection_conf = float(detection.conf[0])
-            box_width = x2 - x1
-
-            track_id = (
-                int(detection.id[0])
-                if detection.id is not None
-                else None
-            )
-
-            identity, identity_conf, trim, dimensions = (
-                prediction_cache.get(
-                    track_id,
-                    ("Not classified", 0.0, None, None),
-                )
-            )
-
-            should_classify = (
-                track_id is not None
-                and box_width >= MIN_CROP_WIDTH
-                and track_id not in pending_classifications
-                and (
-                    track_id not in prediction_cache
-                    or frame_number
-                    - last_classified_frame.get(track_id, -1)
-                    >= CLASSIFY_EVERY
-                )
-            )
-
-            if should_classify:
-                future = executor.submit(
-                    classify_and_get_metrics,
-                    frame=frame,
-                    box=box,
-                    classifier=classifier,
-                    car_api=car_api,
-                    track_id=track_id,
-                )
-                pending_classifications[track_id] = future
-                last_classified_frame[track_id] = frame_number
-
-            # Identified vehicles display make/model/year, trim,
-            # and physical dimensions. Others show box only.
-            lines = []
-
-            if parse_vehicle_name(identity):
-                lines.append(f"{identity}: {identity_conf:.1%}")
-
-                if dimensions:
-                    lines.extend(metric_lines(dimensions))
-                elif trim:
-                    lines.append(f"Reference trim: {trim}")
-
-            # Geometry engine: estimate depth from the known vehicle
-            # height and its pixel height in the current frame.
-            if geometry is not None and dimensions:
-                frame_height, frame_width = frame.shape[:2]
-
-                if is_fully_visible(box, frame_width, frame_height):
-                    distance_m = geometry.estimate_distance_m(
-                        real_size_in=dimensions.get("height"),
-                        pixel_size=y2 - y1,
-                        frame_width_px=frame_width,
-                    )
-
-                    if distance_m is not None:
-                        lines.append(format_distance(distance_m))
-
-            draw_label(frame, box, lines)
-
-        cv2.putText(
-            frame,
-            f"Vehicles: {len(result.boxes)}",
-            (20, 40),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (255, 255, 255),
-            2,
+        annotate_frame(
+            frame=frame,
+            frame_number=frame_number,
+            detector=detector,
+            classifier=classifier,
+            car_api=car_api,
+            geometry=geometry,
+            prediction_cache=prediction_cache,
+            pending_classifications=pending_classifications,
+            last_classified_frame=last_classified_frame,
+            executor=executor,
         )
 
         button_rect = draw_record_button(frame, recording_enabled)

@@ -4,3 +4,8 @@ ultralytics
 requests
 python-dotenv
 psycopg2-binary
+
+# REST API server (api_server.py)
+fastapi
+uvicorn
+python-multipart
